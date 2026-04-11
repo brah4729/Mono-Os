@@ -1,4 +1,5 @@
 ; boot/multiboot.asm — Multiboot2 header and kernel entry point for MonoOS (Dori kernel)
+; Now requests a linear framebuffer for Oki Desktop Environment
 
 section .multiboot
 align 8
@@ -15,7 +16,19 @@ multiboot_header_start:
     dd MULTIBOOT2_LENGTH
     dd MULTIBOOT2_CHECKSUM
 
-    ; End tag
+    ; ─── Framebuffer tag ───────────────────────────────
+    ; Request a linear framebuffer from GRUB
+    ; Type 5 = framebuffer request
+    align 8
+    dw 5        ; type = framebuffer
+    dw 0        ; flags (not optional)
+    dd 20       ; size of this tag
+    dd 1024     ; preferred width
+    dd 768      ; preferred height
+    dd 32       ; preferred depth (bits per pixel)
+
+    ; ─── End tag ────────────────────────────────────────
+    align 8
     dw 0    ; type
     dw 0    ; flags
     dd 8    ; size

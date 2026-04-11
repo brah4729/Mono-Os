@@ -37,9 +37,17 @@ DISKIMG = monoos-disk.img
 
 # ─── Targets ───────────────────────────────────────────────
 
-.PHONY: all clean run iso disk
+.PHONY: all clean run iso disk libc userland
 
-all: $(ISO)
+all: libc userland $(ISO)
+
+# Build monolibc (userspace C library)
+libc:
+	@$(MAKE) -C libc all
+
+# Build userland programs
+userland: libc
+	@$(MAKE) -C userland all
 
 $(ISO): $(KERNEL)
 	@mkdir -p iso/boot/grub
@@ -85,6 +93,8 @@ debug: $(ISO) $(DISKIMG)
 clean:
 	rm -f $(OBJECTS) $(KERNEL) $(ISO)
 	rm -f iso/boot/$(KERNEL)
+	@$(MAKE) -C libc clean
+	@$(MAKE) -C userland clean
 	@echo "Cleaned."
 
 cleanall: clean
