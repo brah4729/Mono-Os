@@ -21,8 +21,56 @@
 #include "../include/syscall.h"
 #include "../include/process.h"
 #include "../include/elf.h"
+#include "../include/framebuffer.h"
+#include "../include/mouse.h"
+#include "../include/oki.h"
 
 #define MULTIBOOT2_MAGIC_CHECK 0x36D76289
+
+/* ─── Multiboot2 tag parsing ──────────────────────────── */
+
+#define MB2_TAG_END        0
+#define MB2_TAG_BOOT_CMD   1
+#define MB2_TAG_BASIC_MEM  4
+#define MB2_TAG_MMAP       6
+#define MB2_TAG_FRAMEBUFFER 8
+
+typedef struct {
+    uint32_t type;
+    uint32_t size;
+} __attribute__((packed)) mb2_tag_header_t;
+
+typedef struct {
+    uint32_t type;
+    uint32_t size;
+    uint32_t mem_lower;
+    uint32_t mem_upper;
+} __attribute__((packed)) mb2_tag_basic_mem_t;
+
+/* Parsed multiboot2 info */
+static uint32_t mb2_mem_upper = 0;
+static uint32_t mb2_info_addr_global = 0;
+
+static void parse_multiboot2(uint32_t mb_info_addr) {
+    mb2_info_addr_global = mb_info_addr;
+    uint8_t* tag_ptr = (uint8_t*)(mb_info_addr + 8);
+
+    while (1) {
+        mb2_tag_header_t* tag = (mb2_tag_header_t*)tag_ptr;
+        if (tag->type == MB2_TAG_END) break;
+
+        if (tag->type == MB2_TAG_BASIC_MEM) {
+            mb2_tag_basic_mem_t* mem = (mb2_tag_basic_mem_t*)tag;
+            mb2_mem_upper = mem->mem_upper;
+        }
+
+        /* Advance to next tag (8-byte aligned) */
+        uint32_t tag_size = (tag->size + 7) & ~7;
+        tag_ptr += tag_size;
+    }
+}
+
+/* ─── Banner ──────────────────────────────────────────── */
 
 static void print_banner(void) {
     vga_set_color(VGA_LIGHT_CYAN, VGA_BLACK);
@@ -44,6 +92,8 @@ static void print_banner(void) {
     vga_set_color(VGA_LIGHT_GREY, VGA_BLACK);
 }
 
+/* ─── Memory init ────────────────────────────────────── */
+
 static void init_memory(uint32_t mem_upper) {
     /* mem_upper is in KiB, starting at 1 MiB */
     uint32_t mem_size = (mem_upper + 1024) * 1024;
@@ -55,9 +105,7 @@ static void init_memory(uint32_t mem_upper) {
     /* Initialize PMM */
     pmm_init(mem_size, bitmap);
 
-    /* Mark available memory regions
-     * Simple approach: mark everything above 1 MiB as available,
-     * then deinit kernel region */
+    /* Mark available memory regions */
     uint32_t bitmap_size = pmm_get_block_count() / 8;
     uint32_t kernel_end_aligned = (uint32_t)&_kernel_end + bitmap_size;
     if (kernel_end_aligned & 0xFFF) {
@@ -77,6 +125,15 @@ static void init_memory(uint32_t mem_upper) {
     vga_puts(" KiB total\n");
 }
 
+/* ─── Mouse IRQ12 handler ────────────────────────────── */
+
+static void mouse_irq12(registers_t* regs) {
+    (void)regs;
+    mouse_irq_handler();
+}
+
+/* ─── Kernel panic ───────────────────────────────────── */
+
 void kernel_panic(const char* msg) {
     cli();
     vga_set_color(VGA_WHITE, VGA_RED);
@@ -89,13 +146,14 @@ void kernel_panic(const char* msg) {
     for (;;) hlt();
 }
 
-/* Entry point — called from boot/multiboot.asm */
+/* ─── Entry point ────────────────────────────────────── */
+
 void kernel_main(uint32_t magic, uint32_t mboot_info_addr) {
     /* Initialize serial first for debug logging */
     serial_init();
     serial_puts("\n[DORI] MonoOS v" MONOOS_VERSION " booting...\n");
 
-    /* Initialize VGA */
+    /* Initialize VGA (text mode — used during early boot) */
     vga_init();
     print_banner();
 
@@ -106,9 +164,12 @@ void kernel_main(uint32_t magic, uint32_t mboot_info_addr) {
     }
     serial_puts("[DORI] Multiboot2 verified\n");
 
+    /* Parse multiboot2 tags */
+    parse_multiboot2(mboot_info_addr);
+
     /* Initialize GDT */
-    vga_puts("  [OK] GDT initialized\n");
     gdt_init();
+    vga_puts("  [OK] GDT initialized\n");
     serial_puts("[DORI] GDT initialized\n");
 
     /* Initialize IDT */
@@ -122,9 +183,11 @@ void kernel_main(uint32_t magic, uint32_t mboot_info_addr) {
     vga_puts("  [OK] PIT timer (1000 Hz)\n");
 
     /* Initialize memory */
-    multiboot_info_t* mboot = (multiboot_info_t*)mboot_info_addr;
-    init_memory(mboot->mem_upper);
+    init_memory(mb2_mem_upper);
     vga_puts("  [OK] Physical memory manager\n");
+
+    /* Initialize VMM */
+    vmm_init();
 
     /* Initialize heap */
     heap_init();
@@ -133,6 +196,12 @@ void kernel_main(uint32_t magic, uint32_t mboot_info_addr) {
     /* Initialize keyboard */
     keyboard_init();
     vga_puts("  [OK] PS/2 keyboard\n");
+
+    /* Initialize mouse + register IRQ12 */
+    mouse_init();
+    irq_register_handler(12, mouse_irq12);
+    vga_puts("  [OK] PS/2 mouse\n");
+    serial_puts("[DORI] PS/2 mouse initialized\n");
 
     /* Initialize ATA disk driver */
     ata_init();
@@ -153,10 +222,8 @@ void kernel_main(uint32_t magic, uint32_t mboot_info_addr) {
 
     /* Mount DoriFS if disk is present */
     if (ata_is_present()) {
-        /* Try to mount existing DoriFS at LBA 0 */
         vfs_node_t* root = dorifs_mount(0);
         if (!root) {
-            /* No valid DoriFS — format the disk */
             vga_puts("  [..] Formatting disk as DoriFS...\n");
             ata_drive_t drive = ata_get_drive_info();
             dorifs_format(0, drive.size_sectors);
@@ -166,13 +233,12 @@ void kernel_main(uint32_t magic, uint32_t mboot_info_addr) {
             vfs_mount("/", root);
             vga_puts("  [OK] DoriFS mounted at /\n");
 
-            /* Create /nix/store directory structure */
             vfs_mkdir("/nix");
             vfs_mkdir("/nix/store");
             vfs_mkdir("/nix/var");
             vfs_mkdir("/nix/var/nix");
             vfs_mkdir("/nix/var/nix/profiles");
-            vga_puts("  [OK] /nix/store directory created\n");
+            vga_puts("  [OK] /nix/store ready\n");
         }
     }
 
@@ -190,13 +256,34 @@ void kernel_main(uint32_t magic, uint32_t mboot_info_addr) {
 
     serial_puts("[DORI] All systems initialized\n");
 
+    /* ─── Initialize framebuffer and start Oki DE ─── */
+    fb_init_from_multiboot(mboot_info_addr);
+
+    if (fb_is_available()) {
+        vga_puts("  [OK] Framebuffer ready\n");
+        vga_set_color(VGA_LIGHT_GREEN, VGA_BLACK);
+        vga_puts("\n  Starting Oki Desktop Environment...\n");
+
+        /* Small delay so user can see boot messages */
+        for (volatile int i = 0; i < 5000000; i++);
+
+        /* Set mouse callback for Oki */
+        mouse_set_callback(oki_handle_mouse);
+
+        /* Initialize and run Oki DE */
+        oki_init();
+        oki_run();
+
+        /* If oki_run returns, fall back to shell */
+    }
+
+    /* Fallback: text-mode shell */
     vga_set_color(VGA_DARK_GREY, VGA_BLACK);
     vga_puts("  -------------------------------------\n");
     vga_set_color(VGA_LIGHT_GREEN, VGA_BLACK);
     vga_puts("  System ready. Type 'help' for commands.\n\n");
     vga_set_color(VGA_LIGHT_GREY, VGA_BLACK);
 
-    /* Start Dori shell */
     kshell_init();
     kshell_run();
 }

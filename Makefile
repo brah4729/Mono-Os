@@ -21,8 +21,9 @@ C_SOURCES   = kernel/kernel.c kernel/gdt.c kernel/idt.c kernel/pic.c \
               kernel/pit.c kernel/pmm.c kernel/vmm.c kernel/heap.c \
               kernel/kshell.c kernel/vfs.c kernel/dorifs.c \
               kernel/syscall.c kernel/process.c kernel/elf.c \
+              kernel/oki.c \
               drivers/vga.c drivers/keyboard.c drivers/serial.c \
-              drivers/ata.c \
+              drivers/ata.c drivers/framebuffer.c drivers/mouse.c \
               lib/string.c
 
 # Object files

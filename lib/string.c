@@ -70,6 +70,31 @@ char* strncpy(char* dest, const char* src, size_t n) {
     return dest;
 }
 
+char* strcat(char* dest, const char* src) {
+    char* d = dest;
+    while (*d) d++;
+    while ((*d++ = *src++));
+    return dest;
+}
+
+char* strchr(const char* str, int c) {
+    while (*str) {
+        if (*str == (char)c) return (char*)str;
+        str++;
+    }
+    return (c == '\0') ? (char*)str : (void*)0;
+}
+
+char* strstr(const char* haystack, const char* needle) {
+    if (!*needle) return (char*)haystack;
+    size_t nlen = strlen(needle);
+    while (*haystack) {
+        if (strncmp(haystack, needle, nlen) == 0) return (char*)haystack;
+        haystack++;
+    }
+    return (void*)0;
+}
+
 void itoa(int value, char* buf, int base) {
     char* p = buf;
     char* p1, *p2;
